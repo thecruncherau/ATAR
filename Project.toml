@@ -1,7 +1,7 @@
 name = "ATAR"
 uuid = "00839eba-23d4-4133-a7b0-e0dfc664097d"
 authors = ["thecruncherau <thecruncherau@gmail.com>"]
-version = "0.2.0"
+version = "0.3.0"
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"

@@ -11,15 +11,15 @@ expit(x::Number) = 1 / (1 + exp(-x))
 # Core data structure: pre-indexed lookup tables built once from the DataFrame
 struct IndexedData
     # subject_id => sorted unique results
-    subject_results::Dict{Int,Vector{Int}}
-    # (subject_id, result) => percentile (mutable array so we can update in-place)
-    percentile::Dict{Tuple{Int,Int},Float64}
+    subject_results::Dict{Int, Vector{Float64}}
+    # (subject_id, result) => percentile (mutable dict so we can update in-place)
+    percentile::Dict{Tuple{Int,Float64}, Float64}
     # student_id => index in the student array
-    student_index::Dict{Int,Int}
+    student_index::Dict{Int, Int}
     # student_id => Vector of (subject_id, result) pairs
-    student_subjects::Dict{Int,Vector{Tuple{Int,Int}}}
+    student_subjects::Dict{Int, Vector{Tuple{Int,Float64}}}
     # subject_id => Vector of (student_index, result) pairs
-    subject_students::Dict{Int,Vector{Tuple{Int,Int}}}
+    subject_students::Dict{Int, Vector{Tuple{Int,Float64}}}
     student_ids::Vector{Int}
     subject_ids::Vector{Int}
     n_students::Int
@@ -28,16 +28,16 @@ end
 function build_index(raw_data::DataFrame)::IndexedData
     student_ids = unique(raw_data.student_id)
     subject_ids = unique(raw_data.subject_id)
-    n_students = length(student_ids)
+    n_students  = length(student_ids)
 
     student_index = Dict(id => i for (i, id) in enumerate(student_ids))
 
-    student_subjects = Dict{Int,Vector{Tuple{Int,Int}}}(id => Tuple{Int,Int}[] for id in student_ids)
-    subject_students = Dict{Int,Vector{Tuple{Int,Int}}}(id => Tuple{Int,Int}[] for id in subject_ids)
-    subject_results = Dict{Int,Vector{Int}}()
+    student_subjects = Dict{Int, Vector{Tuple{Int,Float64}}}(id => Tuple{Int,Float64}[] for id in student_ids)
+    subject_students = Dict{Int, Vector{Tuple{Int,Float64}}}(id => Tuple{Int,Float64}[] for id in subject_ids)
+    subject_results  = Dict{Int, Vector{Float64}}()
 
     for row in eachrow(raw_data)
-        sid, subj, res = row.student_id, row.subject_id, row.result
+        sid, subj, res = row.student_id, row.subject_id, Float64(row.result)
         push!(student_subjects[sid], (subj, res))
         push!(subject_students[subj], (student_index[sid], res))
     end
@@ -46,7 +46,7 @@ function build_index(raw_data::DataFrame)::IndexedData
         subject_results[subj] = sort(unique(r for (_, r) in subject_students[subj]))
     end
 
-    percentile = Dict{Tuple{Int,Int},Float64}()
+    percentile = Dict{Tuple{Int,Float64}, Float64}()
 
     return IndexedData(
         subject_results, percentile,
@@ -58,10 +58,10 @@ end
 function calculate_raw_percentile_rank!(idx::IndexedData)
     n = idx.n_students
     for subj in idx.subject_ids
-        pairs = idx.subject_students[subj]
-        results = [r for (_, r) in pairs]
-        counts = countmap(results)
-        sorted = idx.subject_results[subj]  # already sorted
+        pairs    = idx.subject_students[subj]
+        results  = [r for (_, r) in pairs]
+        counts   = countmap(results)
+        sorted   = idx.subject_results[subj]  # already sorted
         cumcount = 0
         for res in sorted
             c = counts[res]
@@ -81,7 +81,7 @@ function calculate_polyscores(idx::IndexedData)::Vector{Float64}
 end
 
 function calculate_polyrank(p::Vector{Float64})::Vector{Float64}
-    n = length(p)
+    n     = length(p)
     ranks = n .+ 1 .- competerank(p, rev=true)
     return ranks ./ n
 end
@@ -89,19 +89,19 @@ end
 function fit_logistic!(idx::IndexedData, polyrank::Vector{Float64}, eps::Float64=1e-6)
     for subj in idx.subject_ids
         pairs = idx.subject_students[subj]
-        n = length(pairs)
+        n     = length(pairs)
 
         # Build X and y for OLS in logit space
-        results = [Float64(r) for (_, r) in pairs]
-        ys = [clamp(polyrank[si], eps, 1 - eps) |> logit for (si, _) in pairs]
+        results = [r for (_, r) in pairs]
+        ys      = [clamp(polyrank[si], eps, 1 - eps) |> logit for (si, _) in pairs]
 
         # Analytic OLS: X = [1 | result], solve for betas
-        mean_x = mean(results)
-        mean_y = mean(ys)
-        ss_xx = sum((x - mean_x)^2 for x in results)
-        ss_xy = sum((results[i] - mean_x) * (ys[i] - mean_y) for i in 1:n)
-        beta1 = ss_xx > 0 ? ss_xy / ss_xx : 0.0
-        beta0 = mean_y - beta1 * mean_x
+        mean_x  = mean(results)
+        mean_y  = mean(ys)
+        ss_xx   = sum((x - mean_x)^2 for x in results)
+        ss_xy   = sum((results[i] - mean_x) * (ys[i] - mean_y) for i in 1:n)
+        beta1   = ss_xx > 0 ? ss_xy / ss_xx : 0.0
+        beta0   = mean_y - beta1 * mean_x
 
         # Update percentiles for every unique result in this subject
         for res in idx.subject_results[subj]
@@ -114,11 +114,11 @@ end
 function to_dataframe(idx::IndexedData)::DataFrame
     rows = [(subj, res, idx.percentile[(subj, res)])
             for subj in idx.subject_ids
-            for res in idx.subject_results[subj]]
+            for res  in idx.subject_results[subj]]
     return DataFrame(
-        subject_id=[r[1] for r in rows],
-        result=[r[2] for r in rows],
-        percentile=[r[3] for r in rows],
+        subject_id  = [r[1] for r in rows],
+        result      = [r[2] for r in rows],
+        percentile  = [r[3] for r in rows],
     )
 end
 
@@ -140,22 +140,22 @@ The per-iteration threshold is `ε_{m+1} = L / n_students`, matching equation (1
 Table 4 of the specification (e.g. 50,000 students, L=1 → ε = 0.002%).
 """
 function run_atar(raw_data::DataFrame, iterations::Int=100, L::Real=0)
-    idx = build_index(raw_data)
-    n_students = idx.n_students
+    idx         = build_index(raw_data)
+    n_students  = idx.n_students
     # Convert position swing → polyrank fraction (ε in equation 10)
     # L=0 means no early stopping (ε=0 can never be triggered on finite data)
     eps_threshold = L / n_students
 
     calculate_raw_percentile_rank!(idx)
-    p = calculate_polyscores(idx)
+    p     = calculate_polyscores(idx)
     pdash = calculate_polyrank(p)
 
     max_rank_changes = Float64[]
 
     for m in 1:iterations
         fit_logistic!(idx, pdash)
-        p = calculate_polyscores(idx)
-        pdash_new = calculate_polyrank(p)
+        p          = calculate_polyscores(idx)
+        pdash_new  = calculate_polyrank(p)
         # max_s |P'_{s,m} - P'_{s,(m+1)}|  (equation 10)
         max_change = maximum(abs.(pdash_new .- pdash))
         push!(max_rank_changes, max_change)
